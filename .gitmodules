@@ -1,0 +1,3 @@
+[submodule "agent-ready"]
+	path = agent-ready
+	url = https://github.com/devsuperjin/agent-ready.git

@@ -1,0 +1,1 @@
+FROM /mnt/ai-workspace/models/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf
