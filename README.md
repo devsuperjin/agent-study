@@ -8,7 +8,7 @@ AI agent 学习笔记：课程 Q&A、最小实现、实验记录。
 
 | # | Topic | Artifacts |
 |---|-------|-----------|
-| 1 | 最小 Agent：tool-calling 全链路（tools JSON → chat template → tool_calls → 执行回填） | [agent.py](stage1/day1/agent.py)、[Modelfile](stage1/day1/Modelfile)（本地 GGUF 导入 Ollama）、[response.json](stage1/day1/response.json)（原始 HTTP 响应样例） |
+| 1 | 最小 Agent：tool-calling 全链路（tools JSON → chat template → tool_calls → 执行回填） | [agent.py](stage1/day1/agent.py)、[Modelfile](stage1/day1/Modelfile)（本地 GGUF 导入 Ollama）、[response.json](stage1/day1/response.json)（原始 HTTP 响应样例）（参考 [NamiAgent lesson-01](https://github.com/aa1143/NamiAgent/tree/main/lessons/lesson-01)） |
 
 ### Stage 1 / Day 2
 

@@ -1,11 +1,16 @@
-"""nami-agent 第 1 课：最小 Agent（约 100 行）
+"""Day1：最小 Agent —— tool-calling 全链路（约 100 行）
+
+一条消息从 tools JSON 定义 → chat template 拼接 → 模型返回 tool_calls → 本地执行 → 结果回填再调模型，
+完整跑通最小 Agent 循环。配合 Modelfile（本地 GGUF 导入 Ollama）和 response.json（原始 HTTP 响应样例）学习。
 
 用法：
     pip install openai
     export API_KEY=你的模型密钥
     python agent.py "在当前目录创建 hello.py，打印 hello，并运行它"
 
-默认用 DeepSeek。换别的 OpenAI 兼容模型，设置 BASE_URL 和 MODEL 两个环境变量即可。
+默认用 DeepSeek。换别的 OpenAI 兼容模型（如本地 Ollama），设置 BASE_URL 和 MODEL 两个环境变量即可。
+
+参考：NamiAgent lesson-01（https://github.com/aa1143/NamiAgent/tree/main/lessons/lesson-01）
 """
 import json
 import os
