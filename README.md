@@ -8,13 +8,13 @@ AI agent 学习笔记：课程 Q&A、最小实现、实验记录。
 
 | # | Topic | Artifacts |
 |---|-------|-----------|
-| 1 | 最小 Agent：tool-calling 全链路（tools JSON → chat template → tool_calls → 执行回填） | [agent.py](stage1/day1/agent.py)、[Modelfile](stage1/day1/Modelfile)（本地 GGUF 导入 Ollama）、[response.json](stage1/day1/response.json)（原始 HTTP 响应样例）（参考 [NamiAgent lesson-01](https://github.com/aa1143/NamiAgent/tree/main/lessons/lesson-01)） |
+| 1 | 最小 Agent：tool-calling 全链路 + 权限与安全边界（硬规则 → 风险分级 → 人工确认） | [agent.py](stage1/day1/agent.py)、[permissions.py](stage1/day1/permissions.py)、[tests/](stage1/day1/tests/)（6 个用例）、[Modelfile](stage1/day1/Modelfile)（本地 GGUF 导入 Ollama）、[response.json](stage1/day1/response.json)（原始 HTTP 响应样例）（参考 [NamiAgent lesson-01/03](https://github.com/aa1143/NamiAgent)） |
 
 ### Stage 1 / Day 2
 
 | # | Topic | Artifacts |
 |---|-------|-----------|
-| 2 | 状态、上下文与持久化：截断 → 清理 → 摘要三级上下文管理 + 会话落盘恢复（interrupt and resume） | [agent.py](stage1/day2/agent.py)、[context.py](stage1/day2/context.py)（参考 [NamiAgent lesson-04](https://github.com/aa1143/NamiAgent/tree/main/lessons/lesson-04)） |
+| 2 | 状态、上下文与持久化：截断 → 清理 → 摘要三级上下文管理 + 会话落盘恢复（interrupt and resume）+ 权限边界 | [agent.py](stage1/day2/agent.py)、[context.py](stage1/day2/context.py)、[permissions.py](stage1/day2/permissions.py)（参考 [NamiAgent lesson-03/04](https://github.com/aa1143/NamiAgent)） |
 
 ## Local model setup
 

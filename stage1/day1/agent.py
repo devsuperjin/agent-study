@@ -1,7 +1,9 @@
-"""Day1：最小 Agent —— tool-calling 全链路（约 100 行）
+"""Day1：最小 Agent —— tool-calling 全链路 + 权限与安全边界
 
-一条消息从 tools JSON 定义 → chat template 拼接 → 模型返回 tool_calls → 本地执行 → 结果回填再调模型，
+一条消息从 tools JSON 定义 → chat template 拼接 → 模型返回 tool_calls → 权限检查 → 本地执行 → 结果回填再调模型，
 完整跑通最小 Agent 循环。配合 Modelfile（本地 GGUF 导入 Ollama）和 response.json（原始 HTTP 响应样例）学习。
+
+权限三道关卡见 permissions.py：硬规则（工作区外路径、危险命令）→ 风险分级 → 人工确认。
 
 用法：
     pip install openai
@@ -9,8 +11,10 @@
     python agent.py "在当前目录创建 hello.py，打印 hello，并运行它"
 
 默认用 DeepSeek。换别的 OpenAI 兼容模型（如本地 Ollama），设置 BASE_URL 和 MODEL 两个环境变量即可。
+工作区默认为当前目录，可用 AGENT_STUDY_WORKSPACE 覆盖。
 
 参考：NamiAgent lesson-01（https://github.com/aa1143/NamiAgent/tree/main/lessons/lesson-01）
+      NamiAgent lesson-03（permissions.py 模板）
 """
 import json
 import os
@@ -18,6 +22,8 @@ import subprocess
 import sys
 
 from openai import OpenAI
+
+from permissions import PermissionManager, WORKSPACE, resolve_in_workspace
 
 client = OpenAI(
     api_key=os.environ["API_KEY"],
@@ -32,33 +38,32 @@ SYSTEM = (
 )
 
 
-# ---------- 1. 工具：就是普通的 Python 函数 ----------
+# ---------- 1. 工具：普通的 Python 函数，路径只认工作区 ----------
 def read_file(path: str) -> str:
-    with open(path, encoding="utf-8") as f:
-        return f.read()
+    p = resolve_in_workspace(path)
+    if p is None:  # 双保险：即使绕过了权限检查，这里还会拦
+        return f"[错误] 路径在工作区之外：{path}"
+    return p.read_text(encoding="utf-8")
 
 
 def write_file(path: str, content: str) -> str:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return f"已写入 {path}（{len(content)} 字符）"
+    p = resolve_in_workspace(path)
+    if p is None:
+        return f"[错误] 路径在工作区之外：{path}"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return f"已写入 {p.relative_to(WORKSPACE)}（{len(content)} 字符）"
 
 
 def run_shell(command: str) -> str:
-    # 第 1 课先用最朴素的权限控制：每条命令人工确认
-    if input(f"\n[需要确认] 执行命令：{command}\n允许？(y/n) ").strip().lower() != "y":
-        return "用户拒绝执行该命令"
     try:
-        p = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(command, shell=True, cwd=WORKSPACE,
+                              capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         return "命令超时（60 秒）"
-    return (p.stdout + p.stderr)[-4000:] or "(无输出)"  # 截断，避免撑爆上下文
+    return (proc.stdout + proc.stderr)[-4000:] or "(无输出)"  # 截断，避免撑爆上下文
 
 
-TOOL_FUNCS = {"read_file": read_file, "write_file": write_file, "run_shell": run_shell}
-
-
-# ---------- 2. 工具说明：告诉模型有哪些工具、参数是什么 ----------
 def _tool(name, desc, props):
     return {
         "type": "function",
@@ -80,16 +85,32 @@ TOOLS = [
     _tool("run_shell", "执行 shell 命令并返回输出", {"command": "要执行的命令"}),
 ]
 
+TOOL_FUNCS = {"read_file": read_file, "write_file": write_file, "run_shell": run_shell}
 
-# ---------- 3. 核心：Agent 循环 ----------
-def run(task: str) -> None:
+
+def handle_call(call, perms: PermissionManager) -> str:
+    name = call.function.name
+    try:
+        args = json.loads(call.function.arguments)
+    except json.JSONDecodeError:
+        return "Error: 参数不是合法的 JSON"
+    decision = perms.check(name, args)  # 硬规则 → 风险分级 → 人工确认
+    if not decision.allowed:
+        return f"[权限拒绝] {decision.reason}"
+    try:
+        return TOOL_FUNCS[name](**args)
+    except Exception as e:  # 工具出错也要告诉模型，让它自己修正
+        return f"工具执行出错：{type(e).__name__}: {e}"
+
+
+# ---------- 2. 核心：Agent 循环 ----------
+def run(task: str, perms: PermissionManager) -> None:
     messages = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": task},
     ]
     for step in range(1, MAX_STEPS + 1):
-        resp = client.chat.completions.with_raw_response.create(model=MODEL, messages=messages, tools=TOOLS)
-        print(resp.http_response.text)
+        resp = client.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS)
         msg = resp.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))
 
@@ -98,15 +119,11 @@ def run(task: str) -> None:
             print(f"\n[完成，共 {step} 步]\n{msg.content}")
             return
 
-        # 模型要调用工具：执行，并把结果作为 tool 消息喂回去
+        # 模型要调用工具：先过权限，再执行，并把结果作为 tool 消息喂回去
         for call in msg.tool_calls:
             name = call.function.name
             print(f"[第 {step} 步] {name}({call.function.arguments[:80]})")
-            try:
-                args = json.loads(call.function.arguments)
-                result = TOOL_FUNCS[name](**args)
-            except Exception as e:  # 工具出错也要告诉模型，让它自己修正
-                result = f"工具执行出错：{type(e).__name__}: {e}"
+            result = handle_call(call, perms)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
     print(f"\n[达到 {MAX_STEPS} 步上限，已停止]")
@@ -115,4 +132,4 @@ def run(task: str) -> None:
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit('用法：python agent.py "你的任务"')
-    run(sys.argv[1])
+    run(sys.argv[1], PermissionManager())

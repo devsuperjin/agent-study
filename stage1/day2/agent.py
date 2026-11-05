@@ -1,8 +1,9 @@
 """Day2：状态、上下文与持久化
 
-在 Day1 最小循环之上加两件事：
+在 Day1 最小循环之上加三件事：
 1. 上下文管理：按真实 prompt token 数分级处理——超软限清理旧工具结果，超硬限摘要压缩
 2. 会话持久化：每轮存盘，下次启动自动恢复（interrupt and resume）
+3. 权限与安全边界：permissions.py 三道关卡（硬规则 → 风险分级 → 人工确认），与 day1 同一套
 
 用法：
     pip install openai
@@ -10,6 +11,7 @@
     python agent.py          # 进入 REPL，exit/quit 退出；再进来上下文还在
 
 参考：NamiAgent lesson-04（https://github.com/aa1143/NamiAgent/tree/main/lessons/lesson-04）
+      NamiAgent lesson-03（permissions.py 模板）
 """
 import json
 import os
@@ -20,6 +22,7 @@ from openai import OpenAI
 
 from context import (truncate_tool_result, clear_old_tool_results, compact,
                      save_session, load_session)
+from permissions import PermissionManager, WORKSPACE, resolve_in_workspace
 
 client = OpenAI(
     api_key=os.environ["API_KEY"],
@@ -38,26 +41,30 @@ SYSTEM = (
 )
 
 
-# ---------- 工具：与 Day1 相同的三个 ----------
+# ---------- 工具：与 Day1 相同的三个，路径只认工作区 ----------
 def read_file(path: str) -> str:
-    with open(path, encoding="utf-8") as f:
-        return f.read()
+    p = resolve_in_workspace(path)
+    if p is None:
+        return f"[错误] 路径在工作区之外：{path}"
+    return p.read_text(encoding="utf-8")
 
 
 def write_file(path: str, content: str) -> str:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return f"已写入 {path}（{len(content)} 字符）"
+    p = resolve_in_workspace(path)
+    if p is None:
+        return f"[错误] 路径在工作区之外：{path}"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return f"已写入 {p.relative_to(WORKSPACE)}（{len(content)} 字符）"
 
 
 def run_shell(command: str) -> str:
-    if input(f"\n[需要确认] 执行命令：{command}\n允许？(y/n) ").strip().lower() != "y":
-        return "用户拒绝执行该命令"
     try:
-        p = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(command, shell=True, cwd=WORKSPACE,
+                              capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         return "命令超时（60 秒）"
-    return (p.stdout + p.stderr)[-4000:] or "(无输出)"
+    return (proc.stdout + proc.stderr)[-4000:] or "(无输出)"
 
 
 def _tool(name, desc, props):
@@ -84,8 +91,23 @@ TOOLS = [
 TOOL_FUNCS = {"read_file": read_file, "write_file": write_file, "run_shell": run_shell}
 
 
-# ---------- Agent 循环：比 Day1 多了按 token 数分级的上下文处理 ----------
-def run(user_input: str, messages: list) -> str:
+def handle_call(call, perms: PermissionManager) -> str:
+    name = call.function.name
+    try:
+        args = json.loads(call.function.arguments or "{}")
+    except json.JSONDecodeError:
+        return "Error: 参数不是合法的 JSON"
+    decision = perms.check(name, args)  # 硬规则 → 风险分级 → 人工确认
+    if not decision.allowed:
+        return f"[权限拒绝] {decision.reason}"
+    try:
+        return TOOL_FUNCS[name](**args)
+    except Exception as e:
+        return f"工具执行出错：{type(e).__name__}: {e}"
+
+
+# ---------- Agent 循环：按 token 数分级的上下文处理 + 权限检查 ----------
+def run(user_input: str, messages: list, perms: PermissionManager) -> str:
     messages.append({"role": "user", "content": user_input})
     for step in range(1, MAX_STEPS + 1):
         resp = client.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS)
@@ -99,11 +121,7 @@ def run(user_input: str, messages: list) -> str:
         for call in msg.tool_calls:
             name = call.function.name
             print(f"[第 {step} 步] {name}({call.function.arguments[:80]}) [prompt_tokens={prompt_tokens}]")
-            try:
-                args = json.loads(call.function.arguments)
-                result = TOOL_FUNCS[name](**args)
-            except Exception as e:
-                result = f"工具执行出错：{type(e).__name__}: {e}"
+            result = handle_call(call, perms)
             messages.append({"role": "tool", "tool_call_id": call.id,
                              "content": truncate_tool_result(result)})   # 第 1 层
             prompt_tokens += len(result) // 4   # 粗估工具结果带来的增量
@@ -121,6 +139,7 @@ def run(user_input: str, messages: list) -> str:
 def main():
     # clock in：从磁盘恢复会话；没有则用全新 system prompt
     messages = load_session(SESSION_NAME) or [{"role": "system", "content": SYSTEM}]
+    perms = PermissionManager()  # "本次会话一直允许"的记忆在整个 REPL 生命周期内有效
     if len(messages) > 1:
         print(f"[恢复会话：{len(messages)} 条消息已从磁盘加载]")
     while True:
@@ -132,7 +151,7 @@ def main():
             break
         if not q:
             continue
-        print("\n" + run(q, messages) + "\n")
+        print("\n" + run(q, messages, perms) + "\n")
         # clock out：每轮结束落盘，随时可中断、随时可恢复
         save_session(SESSION_NAME, messages)
     save_session(SESSION_NAME, messages)
